@@ -1,0 +1,26 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Translations are consistent and mac-check.sh is rebuilt
+        run: ./build.sh --check
+
+      - name: Syntax check with the stock macOS bash 3.2
+        run: /bin/bash -n mac-check.sh
+
+      - name: Smoke run in every language
+        run: |
+          for f in lang/*.txt; do
+            l="$(basename "$f" .txt)"
+            echo "::group::$l"
+            /bin/bash mac-check.sh --no-interactive --no-color --lang "$l" || true
+            echo "::endgroup::"
+          done

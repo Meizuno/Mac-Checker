@@ -1,93 +1,97 @@
-# mac-check
+# Mac-Checker
 
-Консольна утиліта для швидкої перевірки вживаного MacBook перед купівлею.
-Нічого не встановлює і не змінює в системі — лише читає дані macOS і видає звіт з оцінкою
-✔ / ▲ / ✖.
+A console tool that checks a used MacBook before you buy it. It installs nothing and changes
+nothing: it only reads data from macOS and rates each check as ✔ ok, ▲ warning or ✖ problem.
 
-## Запуск
+## Run
 
-Відкрийте **Термінал** на Mac, який купуєте, і виконайте:
+Open **Terminal** on the Mac you are about to buy and run:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker/main/mac-check.sh)
 ```
 
-Або через трубу (параметри передаються після `-s --`):
+Or through a pipe (options go after `-s --`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker/main/mac-check.sh | bash -s -- -i
 ```
 
-Розширена перевірка (профілі конфігурації, пароль прошивки на Intel, знос SSD через `smartctl`):
+Extended check (configuration profiles, firmware password on Intel, SSD wear via `smartctl`):
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker/main/mac-check.sh)"
 ```
 
-### Опції
+### Options
 
-| Опція | Що робить |
+| Option | What it does |
 |---|---|
-| `-l КОД`, `--lang КОД` | мова інтерфейсу: `uk` `en` `de` `pl` `es` `fr` `it` `pt` `nl` `cs` `tr`; типово — мова системи, а якщо її немає в списку — англійська |
-| `-i`, `--interactive` | одразу запустити ручні тести |
-| `-n`, `--no-interactive` | не пропонувати ручні тести |
-| `-o ФАЙЛ`, `--output ФАЙЛ` | зберегти звіт у текстовий файл |
-| `--no-color` | вивід без кольорів |
-| `-h`, `--help` | довідка |
+| `-l CODE`, `--lang CODE` | interface language: `en` `uk` `de` `pl` `es` `fr` `it` `pt` `nl` `cs` `tr`; defaults to the system language, falling back to English |
+| `-i`, `--interactive` | start the manual tests right away |
+| `-n`, `--no-interactive` | don't offer the manual tests |
+| `-o FILE`, `--output FILE` | save the report to a text file |
+| `--no-color` | plain output without colors |
+| `-h`, `--help` | help |
+| `-v`, `--version` | version |
 
-Код виходу: `0` — критичних проблем немає, `1` — є хоча б одна ✖.
+Exit code: `0` — no critical problems, `1` — at least one ✖.
 
-## Що перевіряється
+## What it checks
 
-**Блокування** — Activation Lock / «Знайти Mac», реєстрація в DEP/Apple Business Manager, MDM,
-профілі конфігурації та пароль прошивки (з `sudo`), SIP, FileVault.
+**Locks** — Activation Lock / Find My Mac, enrollment in DEP / Apple Business Manager, MDM,
+configuration profiles and firmware password (with `sudo`), SIP, FileVault.
 
-**Батарея** — кількість циклів відносно ресурсу, максимальна ємність (з `system_profiler` та `ioreg`),
-стан за оцінкою macOS, ознаки неоригінальної заміни, робота зарядного пристрою.
+**Battery** — charge cycles against the rated lifespan, maximum capacity (from `system_profiler`
+and `ioreg`), condition as reported by macOS, signs of a non-genuine replacement, whether the
+charger works.
 
-**Накопичувач** — модель, обсяг, SMART-статус; знос і обсяг записаних даних, якщо встановлено
-`smartmontools`.
+**Storage** — model, size, SMART status; wear and total data written if `smartmontools` is
+installed.
 
-**Залізо** — модель і серійний номер, процесор, пам'ять, графіка, вбудований дисплей, камера,
-динаміки, мікрофон, Wi-Fi, Bluetooth.
+**Hardware** — model and serial number, processor, memory, graphics, built-in display, camera,
+speakers, microphone, Wi-Fi, Bluetooth.
 
-**Стабільність** — kernel panic у журналах, тротлінг через перегрів, час роботи.
+**Stability** — kernel panics in the logs, thermal throttling, uptime.
 
-**Ручні тести** (за бажанням) — клавіатура (відстежує кожну натиснуту клавішу), динаміки,
-камера з мікрофоном (Photo Booth), екран на биті пікселі (однотонні кольори на весь екран).
+**Manual tests** (optional) — keyboard (tracks every key you press), speakers, camera with
+microphone (Photo Booth), display for dead pixels (full-screen solid colors).
 
-Наприкінці — чекліст того, що скрипт перевірити не може: корпус, сліди рідини, порти,
-трекпад, Touch ID, гарантія на checkcoverage.apple.com.
+At the end it prints a checklist of what a script can't verify: the case, liquid damage,
+ports, trackpad, Touch ID, and warranty status at checkcoverage.apple.com.
 
-## Обмеження
+## Limitations
 
-- У нових macOS дані акаунтів закриті системою захисту приватності, тож вхід в iCloud
-  перевіряється лише на старих версіях. Головний індикатор — Activation Lock.
-- Activation Lock видно лише на Mac з чипом T2 або Apple Silicon.
-- Журнали збоїв продавець міг очистити.
-- Скрипт не замінює Apple Diagnostics: увімкніть Mac, утримуючи кнопку живлення
-  (Apple Silicon) або клавішу **D** (Intel).
+- On recent macOS versions account data is protected by the privacy system, so iCloud sign-in
+  is detected only on older versions. Activation Lock is the key indicator.
+- Activation Lock status is only available on Macs with a T2 chip or Apple silicon.
+- The seller may have cleared the crash logs.
+- The script does not replace Apple Diagnostics: start the Mac while holding the power button
+  (Apple silicon) or the **D** key (Intel).
 
-Сумісний зі штатним `bash 3.2` у macOS, без сторонніх залежностей.
+Works with the stock `bash 3.2` that ships with macOS and has no third-party dependencies.
 
-## Як додати мову
+## Development
 
-Усі тексти зібрані в каталогах `catalog_<код>` наприкінці `mac-check.sh` у форматі `ключ=текст`
-(`%s` — місце для значення). Скопіюйте `catalog_en` як `catalog_<код>`, перекладіть тексти і
-допишіть код у змінну `LANGS` на початку файлу. Якщо якогось ключа бракує, буде показано англійський текст.
+`mac-check.sh` is a generated file — it is kept in the repository as a single file so it can be
+run with one `curl` command. Don't edit it directly:
 
-## English
-
-A console tool that checks a used MacBook before you buy it: Activation Lock, MDM/DEP enrollment,
-battery cycles and capacity, SSD SMART status, built-in hardware, kernel panics, plus optional
-manual tests for the keyboard, speakers, camera and display. It only reads system data and changes
-nothing.
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker/main/mac-check.sh) --lang en
+```
+src/*.sh        script logic, concatenated in file-name order into main()
+lang/*.txt      interface texts, one file per language, in key=text form
+build.sh        checks the translations and builds mac-check.sh
+check-lang.sh   compares every language with lang/en.txt
 ```
 
-The interface language follows the system language. Available: English, Ukrainian, German,
-Polish, Spanish, French, Italian, Portuguese, Dutch, Czech and Turkish (`-l en|uk|de|pl|es|fr|it|pt|nl|cs|tr`);
-anything else falls back to English. Run `--help` for all options. To add a language, copy
-`catalog_en` at the end of the script to `catalog_<code>`, translate it and add the code to `LANGS`.
+After changing anything in `src/` or `lang/`, run `./build.sh` and commit the rebuilt
+`mac-check.sh` together with your changes. CI runs `./build.sh --check` and fails if the
+committed file is out of date.
+
+### Adding a language
+
+1. Copy `lang/en.txt` to `lang/<code>.txt`, where `<code>` is the two-letter macOS language code.
+2. Translate the text after each `=`. Keep the keys and every `%s` placeholder; don't use any
+   other `%` characters.
+3. Run `./build.sh` — it reports missing keys or placeholders and adds the language automatically.
+
+Missing keys fall back to English at runtime.
