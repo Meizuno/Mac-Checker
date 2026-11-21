@@ -67,7 +67,7 @@ JS
 # Пише 2 ГБ випадкових даних, читає їх назад і звіряє. Без root читання йде з кешу
 # (purge потребує sudo), тож швидкість читання показуємо лише під sudo.
 test_disk() {
-	local size_mb=2048 chunk_mb=64 chunks need_mb free_mb block file wspeed rspeed bad
+	local size_mb=2048 chunk_mb=64 chunks need_mb free_mb block file wspeed rspeed block_md5 bad i
 	chunks=$((size_mb / chunk_mb))
 	need_mb=$((size_mb + 2048))
 	free_mb="$(df -m "$TMP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
@@ -86,21 +86,28 @@ test_disk() {
 		sh "$block" "$chunks" "$file" 2> "$TMP_DIR/write.time"
 	wspeed=$(( size_mb * 100 / $(elapsed_cs "$TMP_DIR/write.time") ))
 
+	# Швидкість читання — чистим dd без звірки: cmp із труби дає лише ~40 МБ/с
+	# і занижував би результат. Кеш скидаємо перед кожним проходом, щоб читати з диска.
 	[ "$(id -u)" = 0 ] && purge 2>/dev/null
-	/usr/bin/time -p sh -c \
-		'i=0; while [ $i -lt "$2" ]; do
-			dd if="$3" bs=1048576 skip=$((i * $4)) count="$4" 2>/dev/null | cmp -s - "$1" || echo BAD
-			i=$((i + 1))
-		done' \
-		sh "$block" "$chunks" "$file" "$chunk_mb" > "$TMP_DIR/read.bad" 2> "$TMP_DIR/read.time"
+	/usr/bin/time -p dd if="$file" of=/dev/null bs=8m 2> "$TMP_DIR/read.time"
 	rspeed=$(( size_mb * 100 / $(elapsed_cs "$TMP_DIR/read.time") ))
+
+	# Звірка шматків за md5 (cmp -n на macOS ненадійний: скаржиться на EOF на однакових даних).
+	[ "$(id -u)" = 0 ] && purge 2>/dev/null
+	block_md5="$(md5 -q "$block")"
+	bad=0
+	i=0
+	while [ "$i" -lt "$chunks" ]; do
+		[ "$(dd if="$file" bs=1048576 skip=$((i * chunk_mb)) count="$chunk_mb" 2>/dev/null | md5 -q)" = "$block_md5" ] \
+			|| bad=$((bad + 1))
+		i=$((i + 1))
+	done
 	progress_done
 	rm -f "$file" "$block"
 
 	rate_speed "$(T disk_write "$wspeed")" "$wspeed"
 	[ "$(id -u)" = 0 ] && rate_speed "$(T disk_read "$rspeed")" "$rspeed"
 
-	bad="$(grep -c BAD "$TMP_DIR/read.bad")"
 	if [ "$bad" -gt 0 ]; then
 		fail "$(T disk_verify_fail "$bad")"
 	elif [ "$(id -u)" = 0 ]; then
