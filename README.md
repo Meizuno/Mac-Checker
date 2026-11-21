@@ -17,7 +17,8 @@ Or through a pipe (options go after `-s --`):
 curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker/main/mac-check.sh | bash -s -- -i
 ```
 
-Extended check (configuration profiles, firmware password on Intel, SSD wear via `smartctl`):
+Extended check (configuration profiles, firmware password on Intel, SSD wear via `smartctl`,
+real disk read speed):
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker/main/mac-check.sh)"
@@ -29,7 +30,9 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Meizuno/Mac-Checker
 |---|---|
 | `-l CODE`, `--lang CODE` | interface language: `en` `uk` `de` `pl` `es` `fr` `it` `pt` `nl` `cs` `tr`; defaults to the system language, falling back to English |
 | `-i`, `--interactive` | start the manual tests right away |
-| `-n`, `--no-interactive` | don't offer the manual tests |
+| `-n`, `--no-interactive` | don't ask anything: skip the manual tests and the memory/disk test unless `-s` is given |
+| `-s`, `--stress` | run the memory and disk test without asking (about 1 minute) |
+| `-S`, `--no-stress` | skip the memory and disk test |
 | `-o FILE`, `--output FILE` | save the report to a text file |
 | `--no-color` | plain output without colors |
 | `-h`, `--help` | help |
@@ -52,7 +55,18 @@ installed.
 **Hardware** — model and serial number, processor, memory, graphics, built-in display, camera,
 speakers, microphone, Wi-Fi, Bluetooth.
 
+**Memory** — how much memory is free right now and whether swap is in use.
+
 **Stability** — kernel panics in the logs, thermal throttling, uptime.
+
+**Memory and disk test** (optional, about 1 minute) —
+- RAM: fills up to 1 GB (or a quarter of the installed memory) with four bit patterns and checks
+  that no bit has changed. It is a basic test; Apple Diagnostics goes much deeper.
+- Disk: writes 2 GB of random data to the internal drive, measures the write speed, reads the data
+  back and compares it block by block. Below 300 MB/s is flagged as slow for an SSD, below
+  100 MB/s as a likely failing drive. Without `sudo` the data is read back from the memory cache,
+  so the read speed and the on-disk check need `sudo` (it clears the cache with `purge` first).
+  The test file is deleted afterwards.
 
 **Manual tests** (optional) — keyboard (tracks every key you press), speakers, camera with
 microphone (Photo Booth), display for dead pixels (full-screen solid colors).

@@ -40,6 +40,8 @@ usage() {
 	printf '  %-26s %s\n' "-l, --lang CODE" "$(T help_lang): $LANGS"
 	printf '  %-26s %s\n' "-i, --interactive" "$(T help_i)"
 	printf '  %-26s %s\n' "-n, --no-interactive" "$(T help_n)"
+	printf '  %-26s %s\n' "-s, --stress" "$(T help_s)"
+	printf '  %-26s %s\n' "-S, --no-stress" "$(T help_no_s)"
 	printf '  %-26s %s\n' "-o, --output FILE" "$(T help_o)"
 	printf '  %-26s %s\n' "    --no-color" "$(T help_color)"
 	printf '  %-26s %s\n' "-h, --help" "$(T help_h)"

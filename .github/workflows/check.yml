@@ -24,3 +24,6 @@ jobs:
             /bin/bash mac-check.sh --no-interactive --no-color --lang "$l" || true
             echo "::endgroup::"
           done
+
+      - name: Memory and disk test
+        run: /bin/bash mac-check.sh --no-interactive --stress --no-color --lang en || true

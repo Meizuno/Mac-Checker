@@ -19,9 +19,10 @@ main() {
 
 # ---------------------------------------------------------- параметри ----
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 INTERACTIVE=""      # "", "yes" або "no"
+STRESS=""           # тест пам'яті й диска: "", "yes" або "no"
 REPORT_FILE=""
 USE_COLOR=1
 UI_LANG=""          # порожньо — визначити з мови системи
@@ -31,6 +32,8 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		-i|--interactive) INTERACTIVE="yes" ;;
 		-n|--no-interactive) INTERACTIVE="no" ;;
+		-s|--stress) STRESS="yes" ;;
+		-S|--no-stress) STRESS="no" ;;
 		-o|--output) shift; REPORT_FILE="$1" ;;
 		-l|--lang) shift; UI_LANG="$1" ;;
 		--lang=*) UI_LANG="${1#--lang=}" ;;
@@ -84,6 +87,8 @@ usage() {
 	printf '  %-26s %s\n' "-l, --lang CODE" "$(T help_lang): $LANGS"
 	printf '  %-26s %s\n' "-i, --interactive" "$(T help_i)"
 	printf '  %-26s %s\n' "-n, --no-interactive" "$(T help_n)"
+	printf '  %-26s %s\n' "-s, --stress" "$(T help_s)"
+	printf '  %-26s %s\n' "-S, --no-stress" "$(T help_no_s)"
 	printf '  %-26s %s\n' "-o, --output FILE" "$(T help_o)"
 	printf '  %-26s %s\n' "    --no-color" "$(T help_color)"
 	printf '  %-26s %s\n' "-h, --help" "$(T help_h)"
@@ -483,6 +488,27 @@ fi
 free_h="$(df -h / 2>/dev/null | awk 'NR==2 {print $4 "|" $2}')"
 [ -n "$free_h" ] && info "$(T sys_volume "${free_h%|*}" "${free_h#*|}")"
 
+# ------------------------------------------------------------- пам'ять ----
+
+section "$(T s_memory)"
+
+# Залежить від того, що зараз запущено, тому лише для довідки.
+mem_free="$(memory_pressure -Q 2>/dev/null | sed -n 's/.*free percentage: *\([0-9]*\)%.*/\1/p')"
+if [ -n "$mem_free" ]; then
+	if [ "$mem_free" -lt 10 ]; then
+		info "$(T mem_free): ${mem_free}% — $(T mem_low)"
+	else
+		info "$(T mem_free): ${mem_free}%"
+	fi
+fi
+
+swap_used="$(sysctl -n vm.swapusage 2>/dev/null | sed -n 's/.*used = *\([0-9.]*[KMG]\).*/\1/p')"
+case "$swap_used" in
+	"") ;;
+	0.00[KMG]) info "$(T swap_none)" ;;
+	*) info "$(T swap_used): $swap_used" ;;
+esac
+
 # ------------------------------------------------------------- залізо ----
 
 section "$(T s_hw)"
@@ -575,6 +601,126 @@ if [ -n "$therm" ]; then
 	warn "$(T therm_yes): $(printf '%s' "$therm" | head -1 | sed 's/^ *//')"
 else
 	ok "$(T therm_no)"
+fi
+
+# -------------------------------------------- тест пам'яті та диска ----
+
+# Тимчасовий рядок стану в терміналі, який потім стирається.
+progress()      { [ -t 2 ] && printf '\r\033[K%s' "${C_DIM}$1${C_RESET}" >&2; }
+progress_done() { [ -t 2 ] && printf '\r\033[K' >&2; }
+
+# Тривалість у сотих секунди з виводу `/usr/bin/time -p` ("real 1.23" → 123), мінімум 1.
+elapsed_cs() {
+	local cs
+	cs="$(sed -n 's/^real *\([0-9]*\)\.\([0-9]*\).*/\1\2/p' "$1" | sed 's/^0*//')"
+	echo "${cs:-1}"
+}
+
+# Оцінка швидкості диска в МБ/с: для SSD усе нижче кількох сотень — підозріло.
+rate_speed() {
+	if [ "$2" -lt 100 ]; then
+		fail "$1 — $(T disk_very_slow)"
+	elif [ "$2" -lt 300 ]; then
+		warn "$1 — $(T disk_slow)"
+	else
+		ok "$1"
+	fi
+}
+
+# Базовий тест RAM: заповнює до 1 ГБ шаблонами й перевіряє, що жоден біт не змінився.
+# JIT в osascript вимкнений, тож запис іде вбудованим fill(), а звірка — простим циклом.
+test_memory() {
+	local total_mb ram_mb res errors ms
+	total_mb=$(( $(sysctl -n hw.memsize) / 1048576 ))
+	ram_mb=$(( total_mb / 4 ))
+	[ "$ram_mb" -gt 1024 ] && ram_mb=1024
+
+	cat > "$TMP_DIR/memtest.js" <<'JS'
+function verify(a, v) {
+	var e = 0, n = a.length;
+	for (var i = 0; i < n; i++) if (a[i] !== v) e++;
+	return e;
+}
+function run(argv) {
+	var n = parseInt(argv[0], 10) * 262144, t0 = Date.now(), errors = 0, a;
+	try { a = new Uint32Array(n); } catch (e) { return 'ALLOC_FAIL'; }
+	[0x00000000, 0xFFFFFFFF, 0xAAAAAAAA, 0x55555555].forEach(function (v) {
+		a.fill(v);
+		errors += verify(a, v >>> 0);
+	});
+	return 'OK ' + errors + ' ' + (Date.now() - t0);
+}
+JS
+	progress "$(T ram_running "$ram_mb")"
+	res="$(osascript -l JavaScript "$TMP_DIR/memtest.js" "$ram_mb" 2>/dev/null)"
+	progress_done
+
+	case "$res" in
+		"OK "*)
+			set -- $res
+			errors="$2"; ms="$3"
+			if [ "$errors" -eq 0 ]; then
+				ok "$(T ram_ok "$ram_mb" "$((ms / 1000)).$((ms % 1000 / 100))")"
+			else
+				fail "$(T ram_fail "$errors" "$ram_mb")"
+			fi ;;
+		*) warn "$(T ram_alloc "$ram_mb")" ;;
+	esac
+	hint "$(T ram_note)"
+}
+
+# Пише 2 ГБ випадкових даних, читає їх назад і звіряє. Без root читання йде з кешу
+# (purge потребує sudo), тож швидкість читання показуємо лише під sudo.
+test_disk() {
+	local size_mb=2048 chunk_mb=64 chunks need_mb free_mb block file wspeed rspeed bad
+	chunks=$((size_mb / chunk_mb))
+	need_mb=$((size_mb + 2048))
+	free_mb="$(df -m "$TMP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+	if [ "${free_mb:-0}" -lt "$need_mb" ]; then
+		warn "$(T disk_space $((need_mb / 1024)))"
+		return
+	fi
+
+	block="$TMP_DIR/block.bin"
+	file="$TMP_DIR/disktest.bin"
+	head -c $((chunk_mb * 1048576)) /dev/urandom > "$block"
+
+	progress "$(T disk_running "$size_mb")"
+	/usr/bin/time -p sh -c \
+		'i=0; while [ $i -lt "$2" ]; do cat "$1"; i=$((i + 1)); done > "$3"; sync' \
+		sh "$block" "$chunks" "$file" 2> "$TMP_DIR/write.time"
+	wspeed=$(( size_mb * 100 / $(elapsed_cs "$TMP_DIR/write.time") ))
+
+	[ "$(id -u)" = 0 ] && purge 2>/dev/null
+	/usr/bin/time -p sh -c \
+		'i=0; while [ $i -lt "$2" ]; do
+			dd if="$3" bs=1048576 skip=$((i * $4)) count="$4" 2>/dev/null | cmp -s - "$1" || echo BAD
+			i=$((i + 1))
+		done' \
+		sh "$block" "$chunks" "$file" "$chunk_mb" > "$TMP_DIR/read.bad" 2> "$TMP_DIR/read.time"
+	rspeed=$(( size_mb * 100 / $(elapsed_cs "$TMP_DIR/read.time") ))
+	progress_done
+	rm -f "$file" "$block"
+
+	rate_speed "$(T disk_write "$wspeed")" "$wspeed"
+	[ "$(id -u)" = 0 ] && rate_speed "$(T disk_read "$rspeed")" "$rspeed"
+
+	bad="$(grep -c BAD "$TMP_DIR/read.bad")"
+	if [ "$bad" -gt 0 ]; then
+		fail "$(T disk_verify_fail "$bad")"
+	elif [ "$(id -u)" = 0 ]; then
+		ok "$(T disk_verify_ok)"
+	else
+		info "$(T disk_verify_cached)"
+	fi
+}
+
+if [ "$STRESS" = "yes" ] || {
+	[ "$STRESS" != "no" ] && [ "$INTERACTIVE" != "no" ] && has_tty && { out ""; ask_yn "$(T ask_stress)"; }
+}; then
+	section "$(T s_stress)"
+	test_memory
+	test_disk
 fi
 
 # --------------------------------------------------------- ручні тести ----
@@ -855,6 +1001,29 @@ help_color=disable colors
 help_h=show this help
 help_v=show version
 help_sudo=Running with sudo adds firmware password (Intel) and configuration profile checks, and lets smartctl read SSD wear.
+s_memory=Memory
+mem_free=Free memory right now
+mem_low=many apps are running, close them before the memory test
+swap_none=Swap is not in use
+swap_used=Swap in use
+s_stress=Memory and disk test
+ask_stress=Run the memory and disk test (about 1 minute)?
+ram_running=Testing %s MB of memory…
+ram_ok=Memory test: %s MB, 4 patterns, no errors (%s s)
+ram_fail=Memory test: %s errors in %s MB — the RAM may be faulty
+ram_alloc=Memory test: could not allocate %s MB
+ram_note=This is a basic test. For a thorough one, run Apple Diagnostics (see the checklist below).
+disk_space=Disk test skipped: not enough free space (need %s GB)
+disk_running=Writing and reading back %s MB…
+disk_write=Disk write speed: %s MB/s
+disk_read=Disk read speed: %s MB/s
+disk_slow=slow for an SSD
+disk_very_slow=very slow — the drive may be failing
+disk_verify_ok=Data read back from the drive and verified without errors
+disk_verify_fail=Data read back with %s corrupted blocks — the drive is unreliable
+disk_verify_cached=Data read back without errors, but from the memory cache: run with sudo to measure read speed and check the drive itself
+help_s=run the memory and disk test without asking (~1 min)
+help_no_s=skip the memory and disk test
 EOF
 }
 
@@ -991,6 +1160,29 @@ help_color=bez barev
 help_h=tato nápověda
 help_v=verze
 help_sudo=Spuštění přes sudo přidá kontrolu hesla firmwaru (Intel) a konfiguračních profilů a umožní smartctl přečíst opotřebení SSD.
+s_memory=Paměť
+mem_free=Právě volná paměť
+mem_low=běží mnoho aplikací, před testem paměti je zavřete
+swap_none=Odkládací prostor (swap) se nepoužívá
+swap_used=Použitý swap
+s_stress=Test paměti a disku
+ask_stress=Spustit test paměti a disku (asi 1 minuta)?
+ram_running=Testuji %s MB paměti…
+ram_ok=Test paměti: %s MB, 4 vzory, bez chyb (%s s)
+ram_fail=Test paměti: %s chyb v %s MB — paměť RAM může být vadná
+ram_alloc=Test paměti: nepodařilo se vyhradit %s MB
+ram_note=Jde o základní test. Pro důkladnou kontrolu spusťte Apple Diagnostics (viz seznam níže).
+disk_space=Test disku přeskočen: málo volného místa (potřeba %s GB)
+disk_running=Zapisuji a zpětně čtu %s MB…
+disk_write=Rychlost zápisu: %s MB/s
+disk_read=Rychlost čtení: %s MB/s
+disk_slow=pomalé na SSD
+disk_very_slow=velmi pomalé — disk může selhávat
+disk_verify_ok=Data přečtena z disku a ověřena bez chyb
+disk_verify_fail=Při čtení bylo poškozeno bloků: %s — disk je nespolehlivý
+disk_verify_cached=Data přečtena bez chyb, ale z mezipaměti: spusťte přes sudo pro změření čtení a kontrolu samotného disku
+help_s=spustit test paměti a disku bez dotazu (~1 min)
+help_no_s=přeskočit test paměti a disku
 EOF
 }
 
@@ -1127,6 +1319,29 @@ help_color=ohne Farben
 help_h=diese Hilfe
 help_v=Version
 help_sudo=Mit sudo: zusätzlich Firmware-Passwort (Intel) und Konfigurationsprofile, außerdem kann smartctl den SSD-Verschleiß lesen.
+s_memory=Arbeitsspeicher
+mem_free=Derzeit freier Speicher
+mem_low=viele Apps laufen, vor dem Speichertest schließen
+swap_none=Auslagerungsspeicher (Swap) wird nicht genutzt
+swap_used=Genutzter Swap
+s_stress=Speicher- und Laufwerkstest
+ask_stress=Speicher- und Laufwerkstest ausführen (etwa 1 Minute)?
+ram_running=%s MB Arbeitsspeicher werden getestet…
+ram_ok=Speichertest: %s MB, 4 Muster, keine Fehler (%s s)
+ram_fail=Speichertest: %s Fehler in %s MB — der Arbeitsspeicher ist möglicherweise defekt
+ram_alloc=Speichertest: %s MB konnten nicht reserviert werden
+ram_note=Dies ist ein einfacher Test. Für eine gründliche Prüfung Apple Diagnose ausführen (siehe Liste unten).
+disk_space=Laufwerkstest übersprungen: zu wenig freier Speicher (%s GB nötig)
+disk_running=%s MB werden geschrieben und zurückgelesen…
+disk_write=Schreibgeschwindigkeit: %s MB/s
+disk_read=Lesegeschwindigkeit: %s MB/s
+disk_slow=langsam für eine SSD
+disk_very_slow=sehr langsam — das Laufwerk fällt möglicherweise aus
+disk_verify_ok=Daten vom Laufwerk zurückgelesen und fehlerfrei geprüft
+disk_verify_fail=Beim Zurücklesen waren %s Blöcke beschädigt — das Laufwerk ist unzuverlässig
+disk_verify_cached=Daten fehlerfrei zurückgelesen, aber aus dem Cache: mit sudo ausführen, um die Lesegeschwindigkeit zu messen und das Laufwerk selbst zu prüfen
+help_s=Speicher- und Laufwerkstest ohne Nachfrage ausführen (~1 Min.)
+help_no_s=Speicher- und Laufwerkstest überspringen
 EOF
 }
 
@@ -1263,6 +1478,29 @@ help_color=sin colores
 help_h=esta ayuda
 help_v=versión
 help_sudo=Con sudo se comprueban además la contraseña de firmware (Intel) y los perfiles de configuración, y smartctl puede leer el desgaste del SSD.
+s_memory=Memoria
+mem_free=Memoria libre ahora
+mem_low=hay muchas apps abiertas, ciérralas antes de la prueba de memoria
+swap_none=No se está usando memoria de intercambio (swap)
+swap_used=Swap en uso
+s_stress=Prueba de memoria y disco
+ask_stress=¿Ejecutar la prueba de memoria y disco (aprox. 1 minuto)?
+ram_running=Probando %s MB de memoria…
+ram_ok=Prueba de memoria: %s MB, 4 patrones, sin errores (%s s)
+ram_fail=Prueba de memoria: %s errores en %s MB — la RAM podría estar averiada
+ram_alloc=Prueba de memoria: no se pudieron reservar %s MB
+ram_note=Es una prueba básica. Para una revisión a fondo, usa Diagnóstico Apple (ver la lista de abajo).
+disk_space=Prueba de disco omitida: no hay suficiente espacio libre (se necesitan %s GB)
+disk_running=Escribiendo y leyendo de nuevo %s MB…
+disk_write=Velocidad de escritura: %s MB/s
+disk_read=Velocidad de lectura: %s MB/s
+disk_slow=lenta para un SSD
+disk_very_slow=muy lenta — la unidad podría estar fallando
+disk_verify_ok=Datos leídos de la unidad y verificados sin errores
+disk_verify_fail=Al leer los datos había %s bloques dañados — la unidad no es fiable
+disk_verify_cached=Datos leídos sin errores, pero desde la caché de memoria: ejecuta con sudo para medir la lectura y comprobar la propia unidad
+help_s=ejecutar la prueba de memoria y disco sin preguntar (~1 min)
+help_no_s=omitir la prueba de memoria y disco
 EOF
 }
 
@@ -1399,6 +1637,29 @@ help_color=sans couleurs
 help_h=cette aide
 help_v=version
 help_sudo=Avec sudo : vérification du mot de passe du firmware (Intel) et des profils de configuration, et lecture de l’usure du SSD par smartctl.
+s_memory=Mémoire
+mem_free=Mémoire libre actuellement
+mem_low=de nombreuses apps sont ouvertes, fermez-les avant le test mémoire
+swap_none=La mémoire d’échange (swap) n’est pas utilisée
+swap_used=Swap utilisé
+s_stress=Test de la mémoire et du disque
+ask_stress=Lancer le test de la mémoire et du disque (environ 1 minute) ?
+ram_running=Test de %s Mo de mémoire…
+ram_ok=Test mémoire : %s Mo, 4 motifs, aucune erreur (%s s)
+ram_fail=Test mémoire : %s erreurs sur %s Mo — la RAM est peut-être défectueuse
+ram_alloc=Test mémoire : impossible d’allouer %s Mo
+ram_note=C’est un test simple. Pour un test approfondi, lancez les Diagnostics Apple (voir la liste ci-dessous).
+disk_space=Test du disque ignoré : pas assez d’espace libre (%s Go nécessaires)
+disk_running=Écriture puis relecture de %s Mo…
+disk_write=Vitesse d’écriture : %s Mo/s
+disk_read=Vitesse de lecture : %s Mo/s
+disk_slow=lent pour un SSD
+disk_very_slow=très lent — le disque est peut-être défaillant
+disk_verify_ok=Données relues depuis le disque et vérifiées sans erreur
+disk_verify_fail=%s blocs corrompus à la relecture — le disque n’est pas fiable
+disk_verify_cached=Données relues sans erreur, mais depuis le cache mémoire : lancez avec sudo pour mesurer la lecture et vérifier le disque lui-même
+help_s=lancer le test mémoire et disque sans demander (~1 min)
+help_no_s=ignorer le test mémoire et disque
 EOF
 }
 
@@ -1535,6 +1796,29 @@ help_color=senza colori
 help_h=questa guida
 help_v=versione
 help_sudo=Con sudo si controllano anche la password del firmware (Intel) e i profili di configurazione, e smartctl può leggere l’usura dell’SSD.
+s_memory=Memoria
+mem_free=Memoria libera ora
+mem_low=sono aperte molte app, chiudile prima del test della memoria
+swap_none=La memoria di swap non è in uso
+swap_used=Swap in uso
+s_stress=Test di memoria e disco
+ask_stress=Eseguire il test di memoria e disco (circa 1 minuto)?
+ram_running=Test di %s MB di memoria…
+ram_ok=Test della memoria: %s MB, 4 schemi, nessun errore (%s s)
+ram_fail=Test della memoria: %s errori in %s MB — la RAM potrebbe essere guasta
+ram_alloc=Test della memoria: impossibile allocare %s MB
+ram_note=È un test di base. Per una verifica approfondita esegui la Diagnostica Apple (vedi l’elenco sotto).
+disk_space=Test del disco saltato: spazio libero insufficiente (servono %s GB)
+disk_running=Scrittura e rilettura di %s MB…
+disk_write=Velocità di scrittura: %s MB/s
+disk_read=Velocità di lettura: %s MB/s
+disk_slow=lenta per un SSD
+disk_very_slow=molto lenta — l’unità potrebbe guastarsi
+disk_verify_ok=Dati riletti dall’unità e verificati senza errori
+disk_verify_fail=Alla rilettura %s blocchi erano danneggiati — l’unità non è affidabile
+disk_verify_cached=Dati riletti senza errori, ma dalla cache in memoria: esegui con sudo per misurare la lettura e verificare l’unità stessa
+help_s=esegui il test di memoria e disco senza chiedere (~1 min)
+help_no_s=salta il test di memoria e disco
 EOF
 }
 
@@ -1671,6 +1955,29 @@ help_color=zonder kleuren
 help_h=deze hulp
 help_v=versie
 help_sudo=Met sudo worden ook het firmwarewachtwoord (Intel) en configuratieprofielen gecontroleerd, en kan smartctl de SSD-slijtage lezen.
+s_memory=Geheugen
+mem_free=Nu vrij geheugen
+mem_low=er draaien veel apps, sluit ze vóór de geheugentest
+swap_none=Wisselgeheugen (swap) wordt niet gebruikt
+swap_used=Swap in gebruik
+s_stress=Geheugen- en schijftest
+ask_stress=Geheugen- en schijftest uitvoeren (ongeveer 1 minuut)?
+ram_running=%s MB geheugen wordt getest…
+ram_ok=Geheugentest: %s MB, 4 patronen, geen fouten (%s s)
+ram_fail=Geheugentest: %s fouten in %s MB — het RAM is mogelijk defect
+ram_alloc=Geheugentest: kon %s MB niet reserveren
+ram_note=Dit is een basistest. Voer voor een grondige controle Apple Diagnostics uit (zie de lijst hieronder).
+disk_space=Schijftest overgeslagen: te weinig vrije ruimte (%s GB nodig)
+disk_running=%s MB schrijven en teruglezen…
+disk_write=Schrijfsnelheid: %s MB/s
+disk_read=Leessnelheid: %s MB/s
+disk_slow=traag voor een SSD
+disk_very_slow=erg traag — de schijf gaat mogelijk kapot
+disk_verify_ok=Gegevens van de schijf teruggelezen en zonder fouten gecontroleerd
+disk_verify_fail=Bij het teruglezen waren %s blokken beschadigd — de schijf is onbetrouwbaar
+disk_verify_cached=Gegevens zonder fouten teruggelezen, maar uit de geheugencache: voer uit met sudo om de leessnelheid te meten en de schijf zelf te controleren
+help_s=geheugen- en schijftest uitvoeren zonder te vragen (~1 min)
+help_no_s=geheugen- en schijftest overslaan
 EOF
 }
 
@@ -1807,6 +2114,29 @@ help_color=bez kolorów
 help_h=ta pomoc
 help_v=wersja
 help_sudo=Uruchomienie przez sudo dodaje sprawdzenie hasła oprogramowania sprzętowego (Intel) i profili konfiguracyjnych oraz pozwala smartctl odczytać zużycie SSD.
+s_memory=Pamięć
+mem_free=Obecnie wolna pamięć
+mem_low=działa wiele aplikacji, zamknij je przed testem pamięci
+swap_none=Plik wymiany (swap) nie jest używany
+swap_used=Użyty swap
+s_stress=Test pamięci i dysku
+ask_stress=Uruchomić test pamięci i dysku (około 1 minuty)?
+ram_running=Testowanie %s MB pamięci…
+ram_ok=Test pamięci: %s MB, 4 wzorce, bez błędów (%s s)
+ram_fail=Test pamięci: %s błędów w %s MB — pamięć RAM może być uszkodzona
+ram_alloc=Test pamięci: nie udało się przydzielić %s MB
+ram_note=To podstawowy test. Aby sprawdzić dokładnie, uruchom Apple Diagnostics (zob. listę poniżej).
+disk_space=Pominięto test dysku: za mało wolnego miejsca (potrzeba %s GB)
+disk_running=Zapis i odczyt %s MB…
+disk_write=Prędkość zapisu na dysk: %s MB/s
+disk_read=Prędkość odczytu z dysku: %s MB/s
+disk_slow=wolno jak na SSD
+disk_very_slow=bardzo wolno — dysk może ulegać awarii
+disk_verify_ok=Dane odczytane z dysku i sprawdzone bez błędów
+disk_verify_fail=Podczas odczytu uszkodzonych bloków: %s — dysk jest niepewny
+disk_verify_cached=Dane odczytane bez błędów, ale z pamięci podręcznej: uruchom przez sudo, aby zmierzyć prędkość odczytu i sprawdzić sam dysk
+help_s=uruchom test pamięci i dysku bez pytania (~1 min)
+help_no_s=pomiń test pamięci i dysku
 EOF
 }
 
@@ -1943,6 +2273,29 @@ help_color=sem cores
 help_h=esta ajuda
 help_v=versão
 help_sudo=Com sudo verificam-se também a palavra-passe de firmware (Intel) e os perfis de configuração, e o smartctl pode ler o desgaste do SSD.
+s_memory=Memória
+mem_free=Memória livre neste momento
+mem_low=há muitas apps abertas, feche-as antes do teste de memória
+swap_none=A memória de troca (swap) não está a ser usada
+swap_used=Swap em uso
+s_stress=Teste de memória e disco
+ask_stress=Executar o teste de memória e disco (cerca de 1 minuto)?
+ram_running=A testar %s MB de memória…
+ram_ok=Teste de memória: %s MB, 4 padrões, sem erros (%s s)
+ram_fail=Teste de memória: %s erros em %s MB — a RAM pode estar avariada
+ram_alloc=Teste de memória: não foi possível reservar %s MB
+ram_note=É um teste básico. Para uma verificação completa, execute o Diagnóstico Apple (ver a lista abaixo).
+disk_space=Teste do disco ignorado: espaço livre insuficiente (são necessários %s GB)
+disk_running=A escrever e a ler de volta %s MB…
+disk_write=Velocidade de escrita: %s MB/s
+disk_read=Velocidade de leitura: %s MB/s
+disk_slow=lenta para um SSD
+disk_very_slow=muito lenta — a unidade pode estar a falhar
+disk_verify_ok=Dados lidos da unidade e verificados sem erros
+disk_verify_fail=Na leitura havia %s blocos danificados — a unidade não é fiável
+disk_verify_cached=Dados lidos sem erros, mas da cache de memória: execute com sudo para medir a leitura e verificar a própria unidade
+help_s=executar o teste de memória e disco sem perguntar (~1 min)
+help_no_s=ignorar o teste de memória e disco
 EOF
 }
 
@@ -2079,6 +2432,29 @@ help_color=renksiz
 help_h=bu yardım
 help_v=sürüm
 help_sudo=sudo ile ayrıca aygıt yazılımı parolası (Intel) ve yapılandırma profilleri kontrol edilir, smartctl de SSD yıpranmasını okuyabilir.
+s_memory=Bellek
+mem_free=Şu anda boş bellek
+mem_low=çok sayıda uygulama açık, bellek testinden önce kapatın
+swap_none=Takas alanı (swap) kullanılmıyor
+swap_used=Kullanılan swap
+s_stress=Bellek ve disk testi
+ask_stress=Bellek ve disk testi çalıştırılsın mı (yaklaşık 1 dakika)?
+ram_running=%s MB bellek test ediliyor…
+ram_ok=Bellek testi: %s MB, 4 desen, hata yok (%s sn)
+ram_fail=Bellek testi: %s hata / %s MB — RAM arızalı olabilir
+ram_alloc=Bellek testi: %s MB ayrılamadı
+ram_note=Bu temel bir testtir. Ayrıntılı kontrol için Apple Diagnostics çalıştırın (aşağıdaki listeye bakın).
+disk_space=Disk testi atlandı: yeterli boş alan yok (%s GB gerekli)
+disk_running=%s MB yazılıp geri okunuyor…
+disk_write=Yazma hızı: %s MB/sn
+disk_read=Okuma hızı: %s MB/sn
+disk_slow=SSD için yavaş
+disk_very_slow=çok yavaş — disk arızalanıyor olabilir
+disk_verify_ok=Veriler diskten geri okundu ve hatasız doğrulandı
+disk_verify_fail=Geri okumada %s blok bozuktu — disk güvenilir değil
+disk_verify_cached=Veriler hatasız okundu, ancak bellek önbelleğinden: okuma hızını ölçmek ve diskin kendisini kontrol etmek için sudo ile çalıştırın
+help_s=bellek ve disk testini sormadan çalıştır (~1 dk)
+help_no_s=bellek ve disk testini atla
 EOF
 }
 
@@ -2215,6 +2591,29 @@ help_color=без кольорів
 help_h=ця довідка
 help_v=версія
 help_sudo=Запуск через sudo додає перевірку пароля прошивки (Intel), списку профілів і дозволяє smartctl прочитати знос SSD.
+s_memory=Пам'ять
+mem_free=Зараз вільно пам'яті
+mem_low=запущено багато програм, закрийте їх перед тестом пам'яті
+swap_none=Файл підкачки (swap) не використовується
+swap_used=Використано swap
+s_stress=Тест пам'яті та диска
+ask_stress=Запустити тест пам'яті та диска (близько 1 хвилини)?
+ram_running=Перевіряю %s МБ пам'яті…
+ram_ok=Тест пам'яті: %s МБ, 4 шаблони, помилок немає (%s с)
+ram_fail=Тест пам'яті: %s помилок у %s МБ — оперативна пам'ять може бути несправна
+ram_alloc=Тест пам'яті: не вдалося виділити %s МБ
+ram_note=Це базовий тест. Для ретельної перевірки запустіть Apple Diagnostics (див. список нижче).
+disk_space=Тест диска пропущено: замало вільного місця (потрібно %s ГБ)
+disk_running=Записую і читаю назад %s МБ…
+disk_write=Швидкість запису на диск: %s МБ/с
+disk_read=Швидкість читання з диска: %s МБ/с
+disk_slow=повільно для SSD
+disk_very_slow=дуже повільно — накопичувач може бути несправний
+disk_verify_ok=Дані прочитано з диска і звірено без помилок
+disk_verify_fail=Під час читання пошкоджено блоків: %s — накопичувач ненадійний
+disk_verify_cached=Дані прочитано без помилок, але з кешу в пам'яті: запустіть через sudo, щоб виміряти швидкість читання і перевірити сам диск
+help_s=запустити тест пам'яті й диска без запитання (~1 хв)
+help_no_s=пропустити тест пам'яті й диска
 EOF
 }
 
